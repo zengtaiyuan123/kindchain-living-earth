@@ -1,6 +1,7 @@
 "use client";
 
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EMPTY_MESSENGER_MEMORY, GLOBE_ZOOM_STOPS, coarsePublicPoint, messengerProfileFor, nearestZoomStop, sanitizeMessengerMemory } from "./kindchain-domain.mjs";
 
 type ThreeModule = typeof import("three");
 
@@ -127,22 +128,28 @@ type Weather = {
 
 type FocusPoint = { lat: number; lon: number; nonce: number };
 type ZoomCommand = { delta: number; nonce: number };
+type MessengerMemory = { replies: number; distanceKm: number; weatherMarks: number; escorts: number };
+type OnboardingStage = "boot" | "seeking" | "ready" | "done";
+type LocationIntent = "locate" | "nearby" | null;
+type ReplyCeremony = { region: string; weather: string; localTime: string; message: string };
+type StoredLocalState = { version: 1; savedAt: number; stories: Story[]; journeys: Journey[] };
 
 const MAP_ENTRY_ZOOM = 10.8;
 const MAP_EXIT_ZOOM = 10.12;
 const MAP_MIN_ZOOM = 9.8;
-const MAP_MAX_ZOOM = 15;
+const MAP_MAX_ZOOM = 13.5;
+const ONBOARDING_STORY_ID = "ke-1";
 
 const EXTRA_UI: Record<Locale, {
   relay: string; expiring: string; capture: string; share: string; preserve: string; proof: string;
   notOnChain: string; pigeonNest: string; shares: string; slots: string; nextMorph: string;
   textOnly: string; saved: string; shared: string; chainLater: string; pigeonBusy: string;
 }> = {
-  en: { relay: "Relay constellation", expiring: "fades in", capture: "Keep a portrait", share: "Ask your circle", preserve: "Seal on-chain", proof: "STAR PATH PROOF", notOnChain: "Local proof · not yet on-chain", pigeonNest: "Messenger roost", shares: "shares", slots: "flight slots", nextMorph: "next plumage", textOnly: "TEXT ONLY · language detected automatically", saved: "Your star-path portrait was saved.", shared: "Invitation sent. Your pigeon grows; only a real text relay extends the constellation.", chainLater: "Wallet and contract connection are required before real on-chain sealing.", pigeonBusy: "Your pigeon is still carrying another light. Help the chain travel to unlock another flight slot." },
-  zh: { relay: "限时接力星系", expiring: "后消散", capture: "星途留影", share: "向自己的圈子求接力", preserve: "链上封存", proof: "独一无二的星途凭证", notOnChain: "本地凭证 · 尚未真实上链", pigeonNest: "信鸽成长巢", shares: "次分享", slots: "个飞行位", nextMorph: "下一次羽色蜕变", textOnly: "只接受文字 · 自动识别任何国家与语言", saved: "星途留影已经保存。", shared: "邀请已发出，信鸽获得成长；只有新的文字接力才会让星系续命。", chainLater: "真实链上封存需要接入钱包和正式合约；当前不会假装已经上链。", pigeonBusy: "你的小鸽子还在送上一封信。邀请别人接力，可解锁更多飞行位。" },
-  es: { relay: "Constelación de relevo", expiring: "se desvanece en", capture: "Guardar retrato", share: "Pedir relevo", preserve: "Sellar en cadena", proof: "PRUEBA DE RUTA ESTELAR", notOnChain: "Prueba local · aún no está en cadena", pigeonNest: "Palomar mensajero", shares: "compartidos", slots: "vuelos", nextMorph: "próximo plumaje", textOnly: "SOLO TEXTO · idioma detectado automáticamente", saved: "Se guardó tu retrato estelar.", shared: "Invitación enviada. La paloma crece; solo un relevo de texto prolonga la constelación.", chainLater: "Se necesita una cartera y un contrato real para sellar en cadena.", pigeonBusy: "Tu paloma aún lleva otra luz. Comparte para abrir otro vuelo." },
-  fr: { relay: "Constellation relais", expiring: "disparaît dans", capture: "Garder un portrait", share: "Demander un relais", preserve: "Sceller sur chaîne", proof: "PREUVE DU CHEMIN D'ÉTOILES", notOnChain: "Preuve locale · pas encore sur chaîne", pigeonNest: "Colombier", shares: "partages", slots: "vols", nextMorph: "prochain plumage", textOnly: "TEXTE UNIQUEMENT · langue détectée automatiquement", saved: "Votre portrait stellaire est enregistré.", shared: "Invitation envoyée. Le pigeon grandit ; seul un vrai relais de texte prolonge la constellation.", chainLater: "Un portefeuille et un contrat réel sont requis pour le scellement.", pigeonBusy: "Votre pigeon porte encore une lumière. Partagez pour ouvrir un autre vol." },
-  ja: { relay: "期間限定リレー星座", expiring: "で消えます", capture: "星の旅を保存", share: "仲間にリレーを頼む", preserve: "チェーンに保存", proof: "星の旅の証明", notOnChain: "ローカル証明・まだオンチェーンではありません", pigeonNest: "伝書鳩の巣", shares: "シェア", slots: "飛行枠", nextMorph: "次の羽色", textOnly: "テキストのみ・言語を自動判定", saved: "星の旅の画像を保存しました。", shared: "招待を送りました。鳩は成長しますが、星座の延命には実際の文字リレーが必要です。", chainLater: "実際のオンチェーン保存にはウォレットと正式なコントラクトが必要です。", pigeonBusy: "鳩はまだ別の光を運んでいます。共有して飛行枠を増やしましょう。" },
+  en: { relay: "Relay constellation", expiring: "fades in", capture: "Keep a portrait", share: "Ask your circle", preserve: "Seal on-chain", proof: "STAR PATH PROOF", notOnChain: "Local proof · not yet on-chain", pigeonNest: "Messenger roost", shares: "kindness marks", slots: "flight slots", nextMorph: "next plumage", textOnly: "TEXT ONLY · language detected automatically", saved: "Your star-path portrait was saved.", shared: "Invitation sent. Sharing opens a door; only a real reply grows your messenger and extends the constellation.", chainLater: "Wallet and contract connection are required before real on-chain sealing.", pigeonBusy: "Your messenger is still carrying another light. A real reply, journey or escort can unlock more flight capacity." },
+  zh: { relay: "限时接力星系", expiring: "后消散", capture: "星途留影", share: "向自己的圈子求接力", preserve: "链上封存", proof: "独一无二的星途凭证", notOnChain: "本地凭证 · 尚未真实上链", pigeonNest: "信使成长巢", shares: "枚善意印记", slots: "个飞行位", nextMorph: "下一次羽色蜕变", textOnly: "只接受文字 · 自动识别任何国家与语言", saved: "星途留影已经保存。", shared: "邀请已发出。分享只打开入口；真实回复才会让星系续命，也让信使成长。", chainLater: "真实链上封存需要接入钱包和正式合约；当前不会假装已经上链。", pigeonBusy: "你的小信使还在送上一封信。完成真实回复、旅程或护送，才能逐渐解锁更多飞行能力。" },
+  es: { relay: "Constelación de relevo", expiring: "se desvanece en", capture: "Guardar retrato", share: "Pedir relevo", preserve: "Sellar en cadena", proof: "PRUEBA DE RUTA ESTELAR", notOnChain: "Prueba local · aún no está en cadena", pigeonNest: "Palomar mensajero", shares: "huellas de bondad", slots: "vuelos", nextMorph: "próximo plumaje", textOnly: "SOLO TEXTO · idioma detectado automáticamente", saved: "Se guardó tu retrato estelar.", shared: "Invitación enviada. Compartir abre una puerta; solo una respuesta real hace crecer al mensajero y prolonga la constelación.", chainLater: "Se necesita una cartera y un contrato real para sellar en cadena.", pigeonBusy: "Tu mensajero aún lleva otra luz. Las respuestas y los viajes desbloquean más capacidad." },
+  fr: { relay: "Constellation relais", expiring: "disparaît dans", capture: "Garder un portrait", share: "Demander un relais", preserve: "Sceller sur chaîne", proof: "PREUVE DU CHEMIN D'ÉTOILES", notOnChain: "Preuve locale · pas encore sur chaîne", pigeonNest: "Colombier", shares: "traces de bonté", slots: "vols", nextMorph: "prochain plumage", textOnly: "TEXTE UNIQUEMENT · langue détectée automatiquement", saved: "Votre portrait stellaire est enregistré.", shared: "Invitation envoyée. Le partage ouvre une porte ; seule une vraie réponse fait grandir le messager et prolonge la constellation.", chainLater: "Un portefeuille et un contrat réel sont requis pour le scellement.", pigeonBusy: "Votre messager porte encore une lumière. Les réponses et les voyages ouvrent plus de capacité." },
+  ja: { relay: "期間限定リレー星座", expiring: "で消えます", capture: "星の旅を保存", share: "仲間にリレーを頼む", preserve: "チェーンに保存", proof: "星の旅の証明", notOnChain: "ローカル証明・まだオンチェーンではありません", pigeonNest: "伝書鳩の巣", shares: "やさしさの印", slots: "飛行枠", nextMorph: "次の羽色", textOnly: "テキストのみ・言語を自動判定", saved: "星の旅の画像を保存しました。", shared: "招待を送りました。共有は入口を開くだけで、実際の返信だけが鳩を成長させ、星座の光を延ばします。", chainLater: "実際のオンチェーン保存にはウォレットと正式なコントラクトが必要です。", pigeonBusy: "鳩はまだ別の光を運んでいます。実際の返信や旅が飛行能力を育てます。" },
 };
 
 const PULSE_UI: Record<Locale, {
@@ -388,6 +395,11 @@ function stableHash(value: string) {
     hash = Math.imul(hash, 16777619);
   }
   return hash >>> 0;
+}
+
+function createLocalId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function activityIntensity(uniquePublishers: number) {
@@ -1362,6 +1374,7 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
     let cameraTarget = 6.8;
     let targetQuaternion: import("three").Quaternion | null = null;
     let nearTriggered = false;
+    let zoomSnapTimer = 0;
     const cameraNear = 2.92;
     const cameraFar = 9.2;
 
@@ -1374,6 +1387,13 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
         onNearRef.current();
       }
       if (cameraTarget > 3.4) nearTriggered = false;
+    };
+
+    const snapCameraZoom = () => {
+      const currentZoom = 1 - (cameraTarget - cameraNear) / (cameraFar - cameraNear);
+      const snappedZoom = nearestZoomStop(currentZoom);
+      cameraTarget = cameraNear + (1 - snappedZoom) * (cameraFar - cameraNear);
+      onZoomRef.current(snappedZoom);
     };
 
     const focusOn = (lat: number, lon: number) => {
@@ -1425,7 +1445,7 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
       world.rotation.x += dy * 0.0055;
       lastX = event.clientX; lastY = event.clientY;
     };
-    const cancelPointer = () => { activePointers.clear(); pointerDown = false; dragged = false; pinchDistance = 0; };
+    const cancelPointer = () => { activePointers.clear(); pointerDown = false; dragged = false; pinchDistance = 0; snapCameraZoom(); };
     const up = (event: PointerEvent) => {
       const wasSinglePointer = activePointers.size === 1;
       activePointers.delete(event.pointerId);
@@ -1435,6 +1455,7 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
         lastX = remaining.x;
         lastY = remaining.y;
       }
+      if (!wasSinglePointer) snapCameraZoom();
       if (!wasSinglePointer || dragged) return;
       setPointer(event);
       raycaster.setFromCamera(pointer, camera);
@@ -1455,6 +1476,8 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
     const wheel = (event: WheelEvent) => {
       event.preventDefault();
       updateCameraZoom(event.deltaY * 0.0034);
+      window.clearTimeout(zoomSnapTimer);
+      zoomSnapTimer = window.setTimeout(snapCameraZoom, 180);
     };
     renderer.domElement.addEventListener("pointerdown", down);
     renderer.domElement.addEventListener("pointermove", move);
@@ -1540,6 +1563,7 @@ function LivingWorld({ stories, activity, journeys, activeJourneyId, textureUrl,
 
     cleanup = () => {
       cancelAnimationFrame(frame);
+      window.clearTimeout(zoomSnapTimer);
       window.removeEventListener("resize", resize);
       renderer.domElement.removeEventListener("pointerdown", down);
       renderer.domElement.removeEventListener("pointermove", move);
@@ -1774,7 +1798,7 @@ function NeighborhoodMap({ point, label, locale, globeZoom, interactive, blend, 
         <div><small>{lens} LENS · Z{mapZoom.toFixed(1)}</small><strong>{label}</strong></div>
         <em>{zoomOutHint}<br />MAX Z{MAP_MAX_ZOOM}</em>
       </header>
-      <div className="map-coordinate">≈ {Math.abs(viewLat).toFixed(2)}°{viewLat >= 0 ? "N" : "S"} · {Math.abs(viewLon).toFixed(2)}°{viewLon >= 0 ? "E" : "W"}</div>
+      <div className="map-coordinate">≈ {Math.abs(viewLat).toFixed(1)}°{viewLat >= 0 ? "N" : "S"} · {Math.abs(viewLon).toFixed(1)}°{viewLon >= 0 ? "E" : "W"} · {locale === "zh" ? "模糊区域" : "COARSE AREA"}</div>
       {mapError && <div className="map-error">地图流正在重新连接，地球视图仍可使用。</div>}
     </section>
   );
@@ -1789,6 +1813,38 @@ function LocationGate({ locale, onAllow, onLater }: { locale: Locale; onAllow: (
       <h2>{zh ? "让地球从你此刻的天空醒来？" : "Wake the Earth from your sky?"}</h2>
       <p>{zh ? "允许后，我们只用位置生成当地天气、晨昏与回家坐标；公开的光仍会模糊位置。" : "Your location shapes local weather, daylight and the home beacon. Public lights remain blurred."}</p>
       <div><button onClick={onLater}>{zh ? "先看看地球" : "Explore first"}</button><button onClick={onAllow}>⌖ {zh ? "使用我的位置" : "Use my location"}</button></div>
+    </section>
+  );
+}
+
+function KindnessOnboarding({ locale, stage, onReceive, onSkip }: { locale: Locale; stage: OnboardingStage; onReceive: () => void; onSkip: () => void }) {
+  if (stage === "done" || stage === "boot") return null;
+  const zh = locale === "zh";
+  return (
+    <section className={`kindness-onboarding stage-${stage}`} role="dialog" aria-modal="true" aria-label={zh ? "接住一束光" : "Receive a light"}>
+      <div className="onboarding-sky" aria-hidden="true"><i /><i /><i /><b>✦</b></div>
+      <small>{stage === "seeking" ? (zh ? "正在穿过晨昏线" : "CROSSING THE TERMINATOR") : (zh ? "一束尚未被回应的光" : "AN UNANSWERED LIGHT")}</small>
+      <h1>{stage === "seeking" ? (zh ? "地球正在寻找一束光……" : "The Earth is finding a light…") : (zh ? "接住它，不需要先介绍自己。" : "Receive it. No introduction needed.")}</h1>
+      <p>{zh ? "你可以只读，也可以回一句。这里不要求建议，不需要点赞，只让一个人知道：世界听见了。" : "Read it, or leave one gentle line. No advice or likes required—only proof that the world heard."}</p>
+      <div className="onboarding-actions">
+        <button type="button" onClick={onSkip}>{zh ? "先自由看看" : "Explore freely"}</button>
+        <button type="button" disabled={stage !== "ready"} onClick={onReceive}><i>✦</i>{zh ? "接住一束光" : "Receive this light"}</button>
+      </div>
+      <em>{zh ? "不需要定位 · 可随时跳过 · 演示内容" : "No location needed · always skippable · experience content"}</em>
+    </section>
+  );
+}
+
+function ReplyArrivalCeremony({ locale, ceremony, onClose }: { locale: Locale; ceremony: ReplyCeremony; onClose: () => void }) {
+  const zh = locale === "zh";
+  return (
+    <section className="reply-ceremony" role="status" aria-live="polite">
+      <div className="ceremony-orbit" aria-hidden="true"><i /><i /><b>✦</b><em>✦</em></div>
+      <small>{zh ? "你的回应正在成为星链的一部分" : "YOUR REPLY IS JOINING THE CONSTELLATION"}</small>
+      <h2>{zh ? "这一刻，世界多了一处被看见的地方。" : "For this moment, one place in the world feels seen."}</h2>
+      <p>“{ceremony.message}”</p>
+      <div><span>{ceremony.region}</span><i>·</i><span>{ceremony.weather}</span><i>·</i><span>{ceremony.localTime}</span></div>
+      <button type="button" onClick={onClose}>{zh ? "回到地球" : "Return to Earth"} →</button>
     </section>
   );
 }
@@ -2028,13 +2084,14 @@ export default function Home() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [panel, setPanel] = useState<Panel>(null);
   const [stories, setStories] = useState<Story[]>(INITIAL_STORIES);
-  const [selectedId, setSelectedId] = useState<string | null>("ca-1");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const [weather, setWeather] = useState<Weather>({ temperature: 21, apparent: 20, wind: 12, gust: 18, cloud: 18, precipitation: 0, humidity: 52, visibility: 24000, soilMoisture: .22, code: 1, isDay: true, localHour: 15, timezone: "America/Edmonton" });
   const [location, setLocation] = useState({ lat: 53.55, lon: -113.49, label: "Edmonton · sample" });
   const [focus, setFocus] = useState<FocusPoint>({ lat: 25, lon: -20, nonce: 0 });
   const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
-  const [locationGate, setLocationGate] = useState(true);
+  const [locationGate, setLocationGate] = useState(false);
+  const [locationIntent, setLocationIntent] = useState<LocationIntent>(null);
   const [nearView, setNearView] = useState(false);
   const [zoomCommand, setZoomCommand] = useState<ZoomCommand>({ delta: 0, nonce: 0 });
   const [mapZoomCommand, setMapZoomCommand] = useState<ZoomCommand>({ delta: 0, nonce: 0 });
@@ -2045,6 +2102,8 @@ export default function Home() {
   const [notice, setNotice] = useState<string | null>(null);
   const [composeMode, setComposeMode] = useState<ComposeMode>("light");
   const [composeScene, setComposeScene] = useState<ComposeScene>(null);
+  const [composeStep, setComposeStep] = useState<1 | 2 | 3>(1);
+  const [draftText, setDraftText] = useState("");
   const [delivery, setDelivery] = useState<Delivery>("random");
   const [courierMode, setCourierMode] = useState<CourierMode>("pigeon");
   const [pickedPlace, setPickedPlace] = useState<{ lat: number; lon: number } | null>(null);
@@ -2059,7 +2118,10 @@ export default function Home() {
   const [earthHidden, setEarthHidden] = useState(false);
   const [localeMenu, setLocaleMenu] = useState(false);
   const [now, setNow] = useState(0);
-  const [shareCount, setShareCount] = useState(0);
+  const [onboardingStage, setOnboardingStage] = useState<OnboardingStage>("boot");
+  const [replyCeremony, setReplyCeremony] = useState<ReplyCeremony | null>(null);
+  const [messengerMemory, setMessengerMemory] = useState<MessengerMemory>({ ...EMPTY_MESSENGER_MEMORY });
+  const [localStateReady, setLocalStateReady] = useState(false);
   const eventCounterRef = useRef(0);
   const actorDayKeyRef = useRef("local-session");
   const c = UI[locale];
@@ -2074,13 +2136,8 @@ export default function Home() {
   }), [auroraChance, location.lat, location.lon, solarMinute, weather]);
   const senderOrigin = useMemo(() => userLocation
     ? { lat: userLocation.lat, lon: userLocation.lon, label: locale === "zh" ? "我的天空" : "My sky" }
-    : { lat: 53.55, lon: -113.49, label: "Edmonton" }, [locale, userLocation]);
-  const pigeonProfile = useMemo(() => {
-    if (shareCount >= 9) return { level: 4, variant: 3, slots: 3, flock: 3, nextAt: 16, name: locale === "zh" ? "星羽鸽群" : "Starlit flock", tint: "gold" };
-    if (shareCount >= 5) return { level: 3, variant: 2, slots: 2, flock: 2, nextAt: 9, name: locale === "zh" ? "银羽成鸽" : "Silverwing", tint: "violet" };
-    if (shareCount >= 2) return { level: 2, variant: 1, slots: 1, flock: 1, nextAt: 5, name: locale === "zh" ? "青羽信鸽" : "Bluewing", tint: "blue" };
-    return { level: 1, variant: 0, slots: 1, flock: 1, nextAt: 2, name: locale === "zh" ? "初生小鸽" : "Young messenger", tint: "pearl" };
-  }, [locale, shareCount]);
+    : { lat: 53.55, lon: -113.49, label: locale === "zh" ? "私密天空" : "Private sky" }, [locale, userLocation]);
+  const pigeonProfile = useMemo(() => messengerProfileFor(messengerMemory, locale), [locale, messengerMemory]);
   const activePigeonFlights = journeys.filter((journey) => journey.id !== "journey-demo-pigeon" && journey.mode === "pigeon" && journeyProgress(journey) < 1).length;
 
   useSoundscape(sound, environment);
@@ -2088,17 +2145,38 @@ export default function Home() {
   useEffect(() => {
     const boot = window.setTimeout(() => {
       setNow(Date.now());
-      const saved = Number(window.localStorage.getItem("kindchain-pigeon-shares") ?? 0);
-      if (Number.isFinite(saved)) setShareCount(Math.max(0, saved));
+      try {
+        const savedMemory = JSON.parse(window.localStorage.getItem("kindchain-messenger-memory-v1") ?? "null");
+        setMessengerMemory(sanitizeMessengerMemory(savedMemory));
+      } catch { setMessengerMemory({ ...EMPTY_MESSENGER_MEMORY }); }
+      try {
+        const savedState = JSON.parse(window.localStorage.getItem("kindchain-local-state-v1") ?? "null") as StoredLocalState | null;
+        if (savedState?.version === 1 && Array.isArray(savedState.stories) && Array.isArray(savedState.journeys)) {
+          const current = Date.now();
+          setStories(savedState.stories.filter((story) => !story.expiresAt || story.expiresAt > current));
+          setJourneys(savedState.journeys.slice(0, 30));
+          setActiveJourneyId(savedState.journeys[0]?.id ?? null);
+        }
+      } catch { /* Corrupt local experience data falls back to the curated sky. */ }
+      setLocalStateReady(true);
       const dayStamp = new Date().toISOString().slice(0, 10);
       const savedActor = window.localStorage.getItem("kindchain-activity-day-key");
       if (savedActor?.startsWith(`${dayStamp}:`)) actorDayKeyRef.current = savedActor;
       else {
-        const nextActor = `${dayStamp}:${crypto.randomUUID()}`;
+        const nextActor = `${dayStamp}:${createLocalId()}`;
         actorDayKeyRef.current = nextActor;
         window.localStorage.setItem("kindchain-activity-day-key", nextActor);
       }
-      if (window.sessionStorage.getItem("kindchain-location-choice")) setLocationGate(false);
+      if (window.localStorage.getItem("kindchain-onboarded") === "1") {
+        setOnboardingStage("done");
+      } else {
+        window.setTimeout(() => {
+          const firstLight = INITIAL_STORIES.find((story) => story.id === ONBOARDING_STORY_ID) ?? INITIAL_STORIES.find((story) => story.replies.length === 0) ?? INITIAL_STORIES[0];
+          setOnboardingStage("seeking");
+          setFocus((current) => ({ lat: firstLight.lat, lon: firstLight.lon, nonce: current.nonce + 1 }));
+          window.setTimeout(() => setOnboardingStage("ready"), 1100);
+        }, 1500);
+      }
     }, 0);
     const timer = window.setInterval(() => {
       const current = Date.now();
@@ -2110,6 +2188,17 @@ export default function Home() {
     }, 1000);
     return () => { window.clearTimeout(boot); window.clearInterval(timer); };
   }, []);
+
+  useEffect(() => {
+    if (onboardingStage === "boot") return;
+    window.localStorage.setItem("kindchain-messenger-memory-v1", JSON.stringify(messengerMemory));
+  }, [messengerMemory, onboardingStage]);
+
+  useEffect(() => {
+    if (!localStateReady) return;
+    const state: StoredLocalState = { version: 1, savedAt: Date.now(), stories, journeys: journeys.slice(0, 30) };
+    window.localStorage.setItem("kindchain-local-state-v1", JSON.stringify(state));
+  }, [journeys, localStateReady, stories]);
 
   const nasaDate = useMemo(() => {
     const date = new Date();
@@ -2225,6 +2314,14 @@ export default function Home() {
     void fetchWeather(story.lat, story.lon, story.region);
   }, [fetchWeather]);
 
+  const finishOnboarding = useCallback((receive: boolean) => {
+    window.localStorage.setItem("kindchain-onboarded", "1");
+    setOnboardingStage("done");
+    if (!receive) return;
+    const firstLight = stories.find((story) => story.id === ONBOARDING_STORY_ID) ?? stories.find((story) => story.replies.length === 0) ?? stories[0];
+    if (firstLight) selectStory(firstLight);
+  }, [selectStory, stories]);
+
   const pickEarth = useCallback((lat: number, lon: number) => {
     setPickedPlace({ lat, lon });
     if (panel === "compose" && delivery === "place") {
@@ -2263,14 +2360,26 @@ export default function Home() {
     );
   }, [c.denied, c.locating, fetchWeather, locale, userLocation]);
 
+  const requestLocation = useCallback((intent: Exclude<LocationIntent, null> = "locate") => {
+    if (userLocation) {
+      locateUser();
+      return;
+    }
+    setLocationIntent(intent);
+    setLocationGate(true);
+  }, [locateUser, userLocation]);
+
   const allowLocation = () => {
     setLocationGate(false);
     window.sessionStorage.setItem("kindchain-location-choice", "allow");
     locateUser();
+    setLocationIntent(null);
   };
   const exploreWithoutLocation = () => {
     setLocationGate(false);
     window.sessionStorage.setItem("kindchain-location-choice", "later");
+    if (locationIntent === "nearby") setPanel("nearby");
+    setLocationIntent(null);
   };
   const enterNeighborhood = useCallback(() => {
     setNearView(true);
@@ -2282,9 +2391,13 @@ export default function Home() {
     if (nearView) {
       setMapZoomCommand((current) => ({ delta, nonce: current.nonce + 1 }));
     } else {
-      setZoomCommand((current) => ({ delta, nonce: current.nonce + 1 }));
+      const stops = GLOBE_ZOOM_STOPS;
+      const currentIndex = stops.reduce((best, stop, index) => Math.abs(stop - zoom) < Math.abs(stops[best] - zoom) ? index : best, 0);
+      const nextIndex = Math.max(0, Math.min(stops.length - 1, currentIndex + (delta < 0 ? 1 : -1)));
+      const cameraRange = 9.2 - 2.92;
+      setZoomCommand((current) => ({ delta: (zoom - stops[nextIndex]) * cameraRange, nonce: current.nonce + 1 }));
     }
-  }, [nearView]);
+  }, [nearView, zoom]);
   const exitNeighborhoodByZoom = useCallback(() => {
     setNearView(false);
     setPanel(null);
@@ -2299,7 +2412,9 @@ export default function Home() {
   const openCompose = (mode: ComposeMode, scene: ComposeScene = null) => {
     setComposeMode(mode);
     setComposeScene(scene);
-    setDelivery(mode === "reply" ? "random" : "random");
+    setComposeStep(1);
+    setDraftText("");
+    setDelivery("random");
     setPanel("compose");
   };
 
@@ -2334,8 +2449,7 @@ export default function Home() {
 
   const submitStory = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const text = String(form.get("message") ?? "").trim();
+    const text = draftText.trim();
     if (!text) return;
     if (courierMode === "pigeon" && activePigeonFlights >= pigeonProfile.slots) {
       setNotice(extra.pigeonBusy);
@@ -2351,6 +2465,7 @@ export default function Home() {
     if (composeMode === "reply" && selected) target = { lat: selected.lat, lon: selected.lon };
     if (delivery === "nearby") target = { lat: senderOrigin.lat + ((sequence % 7) - 3) * .09, lon: senderOrigin.lon + ((sequence % 5) - 2) * .11 };
     if (delivery === "place" && pickedPlace) target = pickedPlace;
+    target = coarsePublicPoint(target);
     const origin = userLocation ? activityOriginFor(userLocation, senderOrigin.label) : undefined;
     const newStory: Story = {
       id: `local-${idSeed}`, chain: composeMode === "reply" && selected ? selected.chain : `path-${idSeed}`, lat: target.lat, lon: target.lon,
@@ -2364,8 +2479,7 @@ export default function Home() {
       const reply: Reply = {
         id: `reply-${idSeed}`, lang: detectedLanguage, text, translations: {},
         ...(userLocation ? {
-          lat: senderOrigin.lat + ((stableHash(idSeed) % 7) - 3) * .018,
-          lon: senderOrigin.lon + ((stableHash(`${idSeed}-lon`) % 7) - 3) * .024,
+          ...coarsePublicPoint(senderOrigin),
           region: senderOrigin.label,
         } : { region: locale === "zh" ? "私密天空" : "Private sky" }),
         country: "Earth", createdAt, origin, authorDayKey: actorDayKeyRef.current, scene: composeScene ?? undefined,
@@ -2392,11 +2506,24 @@ export default function Home() {
     };
     setJourneys((items) => [newJourney, ...items]);
     setActiveJourneyId(newJourney.id);
+    setMessengerMemory((memory) => ({
+      replies: memory.replies + (composeMode === "reply" ? 1 : 0),
+      distanceKm: memory.distanceKm + route.distance,
+      weatherMarks: memory.weatherMarks + (environment.weather === "storm" || environment.weather === "snow" || environment.hazard !== "none" ? 1 : 0),
+      escorts: memory.escorts + 1,
+    }));
     event.currentTarget.reset();
+    setDraftText("");
+    setComposeStep(1);
     setComposeScene(null);
     setPanel(null);
-    setNotice(c.sent);
-    window.setTimeout(() => setNotice(null), 3500);
+    if (composeMode === "reply" && selected) {
+      setReplyCeremony({ region: selected.region, weather: `${weatherIcon(environment)} ${Math.round(weather.temperature)}°`, localTime, message: text });
+      window.setTimeout(() => setReplyCeremony(null), 4600);
+    } else {
+      setNotice(c.sent);
+      window.setTimeout(() => setNotice(null), 3500);
+    }
   };
 
   const requestRelay = async (chain: (typeof chains)[number]) => {
@@ -2407,9 +2534,6 @@ export default function Home() {
     try {
       if (navigator.share) await navigator.share({ title: "KindChain · Star Relay", text: shareText, url: shareUrl });
       else await navigator.clipboard.writeText(`${shareText} ${shareUrl}`);
-      const next = shareCount + 1;
-      setShareCount(next);
-      window.localStorage.setItem("kindchain-pigeon-shares", String(next));
       setNotice(extra.shared);
     } catch {
       setNotice(locale === "zh" ? "分享已取消，星链仍在等待真实接力。" : "Sharing was cancelled; the constellation is still waiting for a real relay.");
@@ -2512,13 +2636,12 @@ export default function Home() {
   const localProgress = Math.max(0, Math.min(1, (mapZoom - MAP_ENTRY_ZOOM) / (MAP_MAX_ZOOM - MAP_ENTRY_ZOOM)));
   const depthProgress = nearView ? .78 + localProgress * .22 : Math.min(.78, zoom * .78);
   const zoomStage = nearView
-    ? mapZoom >= 14 ? "COMMUNITY" : mapZoom >= 12.7 ? "DISTRICT" : mapZoom >= 11.5 ? "CITY" : "REGION"
-    : zoom >= .74 ? "REGION" : zoom >= .53 ? "COUNTRY" : zoom >= .3 ? "EARTH" : "ORBIT";
+    ? mapZoom >= 13.15 ? "COMMUNITY" : mapZoom >= 12.35 ? "DISTRICT" : mapZoom >= 11.45 ? "CITY" : "REGION"
+    : zoom >= .84 ? "REGION" : zoom >= .66 ? "COUNTRY" : zoom >= .48 ? "CONTINENT" : zoom >= .2 ? "EARTH" : "ORBIT";
   const courierScale = Math.max(.4, .98 - depthProgress * .58);
   const currentZone = zoneFor(location.lat, location.lon);
   const solarPoint = subsolarPoint(new Date(now));
   const solarX = ((solarPoint.lon + 180) / 360) * 100;
-  const relayShareChain = (selected ? chains.find((chain) => chain.name === selected.chain) : null) ?? chains[0];
   const terminatorMax = Math.max(1, terminatorPulse.day, terminatorPulse.night);
   const dayBridgeProgress = Math.max(8, (terminatorPulse.day / terminatorMax) * 100);
   const nightBridgeProgress = Math.max(8, (terminatorPulse.night / terminatorMax) * 100);
@@ -2543,7 +2666,7 @@ export default function Home() {
           <b>{Math.round(weather.temperature)}°</b><em>{localTime}</em>
         </button>
         <div className="header-tools">
-          <button className={userLocation ? "home-ready" : ""} onClick={locateUser} aria-label={c.locate} title={c.locate}>⌖</button>
+          <button className={userLocation ? "home-ready" : ""} onClick={() => requestLocation("locate")} aria-label={c.locate} title={c.locate}>⌖</button>
           <button className={sound ? "active" : ""} onClick={() => setSound(!sound)} aria-label={sound ? c.soundOff : c.soundOn} title={sound ? c.soundOff : c.soundOn}>{sound ? "◖))" : "◖×"}</button>
           <button onClick={() => setLocaleMenu(!localeMenu)} aria-label={c.choose}>{locale.toUpperCase()}</button>
           <button onClick={() => setPanel(panel === "menu" ? null : "menu")} aria-label={c.menu}>⋮</button>
@@ -2724,40 +2847,52 @@ export default function Home() {
       {panel === "compose" && (
         <section className="compose-panel floating-panel">
           <div className="panel-head"><span>{composeMode === "wish" ? "♡ WISH" : composeMode === "reply" ? "↳ REPLY" : "✦ NEW LIGHT"}</span><button onClick={() => setPanel(null)} aria-label={c.close}>×</button></div>
+          <div className="compose-progress" aria-label={locale === "zh" ? `写信步骤 ${composeStep}` : `Compose step ${composeStep}`}>
+            <span className={composeStep >= 1 ? "active" : ""}><i>1</i>{locale === "zh" ? "写一句" : "WRITE"}</span>
+            {composeMode !== "reply" && <><b /><span className={composeStep >= 2 ? "active" : ""}><i>2</i>{locale === "zh" ? "选信使" : "MESSENGER"}</span><b /><span className={composeStep >= 3 ? "active" : ""}><i>3</i>{locale === "zh" ? "去哪里" : "DESTINATION"}</span></>}
+          </div>
           {composeScene && <div className={`compose-scene scene-${composeScene}`}><i>✦</i><span><small>LIVE CO-OP SCENE</small><strong>{pulse.compose[composeScene]}</strong></span></div>}
           {composeMode === "reply" && selected && <blockquote>“{storyText(selected, locale, false)}”</blockquote>}
           <form onSubmit={submitStory}>
-            <textarea name="message" required maxLength={600} placeholder={composeMode === "wish" ? c.wishText : composeMode === "reply" ? c.response : c.message} />
-            <p className="auto-translate"><b>{extra.textOnly}</b><span>文A · {c.auto}</span></p>
-            <div className={`pigeon-nest nest-${pigeonProfile.tint}`}>
-              <div className="nest-bird"><i /><i /><b>◇</b>{pigeonProfile.flock > 1 && <em>+{pigeonProfile.flock - 1}</em>}</div>
-              <div className="nest-copy"><small>LV.0{pigeonProfile.level} · {extra.pigeonNest}</small><strong>{pigeonProfile.name}</strong><span>{shareCount} {extra.shares} · {pigeonProfile.slots} {extra.slots} · {activePigeonFlights}/{pigeonProfile.slots} {c.inFlight}</span><u><i style={{ width: `${Math.min(100, (shareCount / pigeonProfile.nextAt) * 100)}%` }} /></u></div>
-              <button type="button" disabled={!relayShareChain} onClick={() => relayShareChain && void requestRelay(relayShareChain)}>↗<span>{extra.share}</span></button>
-            </div>
-            {composeMode !== "reply" && <div className="delivery-tabs">
-              <button type="button" className={delivery === "random" ? "active" : ""} onClick={() => setDelivery("random")}><i>⌁</i>{c.random}</button>
-              <button type="button" className={delivery === "nearby" ? "active" : ""} onClick={() => setDelivery("nearby")}><i>⌖</i>{c.near}</button>
-              <button type="button" className={delivery === "place" ? "active" : ""} onClick={() => setDelivery("place")}><i>◎</i>{c.place}</button>
+            {composeStep === 1 && <div className="compose-step compose-write-step">
+              <textarea name="message" required autoFocus maxLength={600} value={draftText} onChange={(event) => setDraftText(event.target.value)} placeholder={composeMode === "wish" ? c.wishText : composeMode === "reply" ? c.response : c.message} />
+              <p className="auto-translate"><b>{extra.textOnly}</b><span>{draftText.length} / 600 · {c.auto}</span></p>
+              <div className="compose-actions"><button type="button" onClick={() => setPanel(null)}>{c.cancel}</button>{composeMode === "reply" ? <button type="submit" disabled={!draftText.trim()}>{locale === "zh" ? "让回应发光" : "Let it glow"} <b>→</b></button> : <button type="button" disabled={!draftText.trim()} onClick={() => setComposeStep(2)}>{locale === "zh" ? "选择信使" : "Choose a messenger"} <b>→</b></button>}</div>
             </div>}
-            {delivery === "place" && <p className="place-prompt">◎ {pickedPlace ? `${c.selected}: ${pickedPlace.lat.toFixed(1)}°, ${pickedPlace.lon.toFixed(1)}°` : c.place}</p>}
-            <div className="courier-chooser">
-              <div className="courier-title"><span>{c.courier}</span><small>{c.estimate} · {Math.round(composeEstimate.distance).toLocaleString()} km · {formatDuration(composeEstimate.etaHours, locale)}</small></div>
-              <div className="courier-strip">
-                {TRANSPORT_ORDER.map((mode) => {
-                  const spec = TRANSPORTS[mode];
-                  return <button key={mode} type="button" className={courierMode === mode ? "active" : ""} onClick={() => setCourierMode(mode)} title={spec.names[locale]}><i>{spec.glyph}</i><span>{spec.names[locale]}</span><small>{spec.era[locale]}</small></button>;
-                })}
+            {composeMode !== "reply" && composeStep === 2 && <div className="compose-step">
+              <div className={`pigeon-nest nest-${pigeonProfile.tint}`}>
+                <div className="nest-bird"><i /><i /><b>◇</b>{pigeonProfile.flock > 1 && <em>+{pigeonProfile.flock - 1}</em>}</div>
+                <div className="nest-copy"><small>LV.0{pigeonProfile.level} · {extra.pigeonNest}</small><strong>{pigeonProfile.name}</strong><span>{pigeonProfile.score} {extra.shares} · {messengerMemory.replies} {locale === "zh" ? "次回应" : "replies"} · {Math.round(messengerMemory.distanceKm).toLocaleString()} km</span><u><i style={{ width: `${Math.min(100, (pigeonProfile.score / pigeonProfile.nextAt) * 100)}%` }} /></u></div>
               </div>
+              <div className="courier-chooser">
+                <div className="courier-title"><span>{c.courier}</span><small>{c.estimate} · {formatDuration(composeEstimate.etaHours, locale)}</small></div>
+                <div className="courier-strip">
+                  {TRANSPORT_ORDER.map((mode) => {
+                    const spec = TRANSPORTS[mode];
+                    return <button key={mode} type="button" className={courierMode === mode ? "active" : ""} onClick={() => setCourierMode(mode)} title={spec.names[locale]}><i>{spec.glyph}</i><span>{spec.names[locale]}</span><small>{spec.era[locale]}</small></button>;
+                  })}
+                </div>
+              </div>
+              <div className="compose-actions"><button type="button" onClick={() => setComposeStep(1)}>← {locale === "zh" ? "返回" : "Back"}</button><button type="button" onClick={() => setComposeStep(3)}>{locale === "zh" ? "选择目的地" : "Choose destination"} <b>→</b></button></div>
+            </div>}
+            {composeMode !== "reply" && composeStep === 3 && <div className="compose-step">
+              <div className="delivery-tabs">
+                <button type="button" className={delivery === "random" ? "active" : ""} onClick={() => setDelivery("random")}><i>⌁</i>{c.random}</button>
+                <button type="button" className={delivery === "nearby" ? "active" : ""} onClick={() => setDelivery("nearby")}><i>⌖</i>{c.near}</button>
+                <button type="button" className={delivery === "place" ? "active" : ""} onClick={() => setDelivery("place")}><i>◎</i>{c.place}</button>
+              </div>
+              {delivery === "place" && <p className="place-prompt">◎ {pickedPlace ? `${c.selected}: ${pickedPlace.lat.toFixed(1)}°, ${pickedPlace.lon.toFixed(1)}°` : c.place}</p>}
               <div className="route-estimate"><span>{senderOrigin.label}</span><i><b /></i><span>{composeTarget.label}</span><strong>{Math.round(composeEstimate.routeDistance).toLocaleString()} km</strong></div>
-            </div>
-            <div className="compose-actions"><button type="button" onClick={() => setPanel(null)}>{c.cancel}</button><button type="submit">{c.routes} <b>→</b></button></div>
+              <p className="departure-promise">{locale === "zh" ? "默认随缘去往地球某处。没有精确住址，也不会显示实时轨迹。" : "By default, it drifts somewhere on Earth. No exact address or live personal trail is shown."}</p>
+              <div className="compose-actions"><button type="button" onClick={() => setComposeStep(2)}>← {locale === "zh" ? "返回" : "Back"}</button><button type="submit">{locale === "zh" ? "让它启程" : "Let it depart"} <b>→</b></button></div>
+            </div>}
           </form>
         </section>
       )}
 
       <nav className="world-dock" aria-label="KindChain actions">
         <button onClick={drift}><i>✣</i><span>{c.drift}</span></button>
-        <button onClick={() => setPanel(panel === "nearby" ? null : "nearby")}><i>⌁</i><span>{c.nearby}</span></button>
+        <button onClick={() => userLocation || window.sessionStorage.getItem("kindchain-location-choice") ? setPanel(panel === "nearby" ? null : "nearby") : requestLocation("nearby")}><i>⌁</i><span>{c.nearby}</span></button>
         <button className="main-drop" onClick={() => openCompose("light")}><i>✦</i><span>{c.drop}</span></button>
         <button onClick={() => openCompose("wish")}><i>♡</i><span>{c.wish}</span></button>
         <button onClick={() => setPanel(panel === "archive" ? null : "archive")}><i>⌘</i><span>{c.archive}</span></button>
@@ -2772,6 +2907,8 @@ export default function Home() {
       )}
 
       <div className="nasa-mark"><span className="live-dot" />NASA GIBS · {nasaDate}</div>
+      <KindnessOnboarding locale={locale} stage={onboardingStage} onReceive={() => finishOnboarding(true)} onSkip={() => finishOnboarding(false)} />
+      {replyCeremony && <ReplyArrivalCeremony locale={locale} ceremony={replyCeremony} onClose={() => setReplyCeremony(null)} />}
       {locationGate && <LocationGate locale={locale} onAllow={allowLocation} onLater={exploreWithoutLocation} />}
       {notice && <div className="notice" role="status"><i>✦</i>{notice}<button onClick={() => setNotice(null)}>×</button></div>}
     </main>

@@ -1,0 +1,5 @@
+2026-10-21: applied to exported v172 a088e3570a723605cb3fd480024d71bf2c78d92d
+Independent unit tests: 200 passed, 0 failed (173 business, 25 auth, 2 deployment guards).
+Strict TypeScript check: passed.
+Independent Vinext production build: passed.
+No actual provider credentials, SMTP, real accounts or independent production deployment. No mobile acceptance.
